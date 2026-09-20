@@ -1,0 +1,18 @@
+{
+  "allowedOrigins": ["http://127.0.0.1:4173"],
+  "resourceOrigins": [],
+  "headless": false,
+  "captureArtifacts": false,
+  "allowRiskyActions": false,
+  "blockedSelectors": ["[data-qa-private]"],
+  "maxActionsPerMission": 30,
+  "maxMissionMs": 120000,
+  "maxSessionActions": 200,
+  "maxBurstClicks": 3,
+  "minProbability": 0.65,
+  "actionTimeoutMs": 5000,
+  "settleMs": 250,
+  "jevTimeoutMs": 10000,
+  "maxSessions": 3,
+  "model": "jev-1.13.0"
+}

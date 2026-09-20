@@ -1,0 +1,12 @@
+node_modules/
+dist/
+runs/
+.env
+.env.*
+!.env.example
+qa.config.json
+profiles/
+playwright/.auth/
+*storage-state*.json
+*.log
+.DS_Store
