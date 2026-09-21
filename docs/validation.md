@@ -25,7 +25,34 @@ Recorded for commit `dc6204b` + the lockfile commit. These are local runs, not C
 - `npm run demo -- --headless`: completed with `status: anomaly`, the intended duplicate-submit finding. Artifacts removed afterward.
 - `npm run check`: typecheck + unit + browser all green in one pass.
 
-Still not validated locally: real official-Jev calls (no API key), native OMP loading, Muse Spark round trip, proxy transport, real renderer crash, arbitrary user apps.
+## Executed against the real official Jev service — 2026-09-21
+
+Operator-supplied `TYPESAFE_API_KEY` present; these are billable live runs, not mocked.
+
+- `npm run demo -- --headless --live` on the intentional fault fixture:
+  - `mode: official-jev`, `status: anomaly`.
+  - 3 real decisions recorded in `events.jsonl` with model, probability and token usage:
+    `jev-1.13.0: a0, p=0.91, input_tokens=1019` → `jev-1.13.0: a2, p=0.71, input_tokens=1043` → `jev-1.13.0: done, p=0.83, input_tokens=1072`.
+  - The supervisor-supplied `count` assertion failed: 3 Save clicks produced 3 `#records li` entries instead of 1. Correctly reported as `anomaly`, not PASS.
+  - `run.json` requested model `jev-1.13.0`; the decision events report the model name returned by the service.
+  - Artifacts written under `runs/` (gitignored) and removed afterward.
+- Native OMP 18.2.6 with the local extension (`omp -e .../.omp/extensions/qa.js`), `-p` non-interactive, against the local fixture on `127.0.0.1:4173`:
+  - `qa_open` + `qa_inspect`: session opened, title `Jev QA fault fixture`, 5 visible controls, no events.
+  - `qa_explore` end-to-end: real Jev chose `a0` fill (p=0.66), `a1` click (p=0.99), `done` (p=0.89); 2 actions executed; supervisor-supplied count assertion **satisfied** (1 record).
+  - `qa_replay` on that run with `resetConfirmed: true`: new session, 2 actions replayed, `replayOf` set, assertion re-checked, and no model decisions in `events.jsonl` (only `replay_source` + `assertion_satisfied`).
+  - `qa_close` completed normally; no orphaned `dist/src/worker.js` process or Playwright-managed browser remained.
+  - Verified separately that the error path works: `qa_open` against an unreachable origin returned `net::ERR_CONNECTION_REFUSED` without creating a session.
+
+## Still not verified
+
+Real Jev calls are now verified locally (single-fixture scope only). Remaining gaps:
+
+- Muse Spark as an interactive OMP session — only the non-interactive `omp -p` supervisor path was exercised; no interactive Muse-driven multi-mission investigation.
+- Interactive OMP commands: `/qa-stop` is registered by the extension but was not invoked through an interactive TUI session. It was not exercised in the `-p` path, which exposes tools only, not slash commands.
+- `QA_JEV_PROXY` proxy transport through the official SDK.
+- Real renderer process crash (`crash`), iframe/Shadow DOM/canvas/file upload/multi-tab/visual regression.
+- Arbitrary user applications, production data, and any backend state reset.
+- Probability quality of `jev-1.13.0` beyond these three/five decisions; `minProbability=0.65` remains an uncalibrated engineering default.
 
 ## Executed in the creation environment
 

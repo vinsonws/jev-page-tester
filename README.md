@@ -26,7 +26,7 @@ Muse Spark / OMP
 - 支持取消、每会话互斥、进程隔离、精确 origin 白名单、输入/输出限额与本地脱敏。
 - 截图和 Playwright trace 默认关闭，显式启用后可留证；截图可按需返回主模型。
 
-**初始验证不是全链路认证。** 已完成的测试及环境限制见 [docs/validation.md](docs/validation.md)。在线 Muse Spark → OMP → 官方 Jev 链路仍需使用你的账号验证。
+**初始验证不是全链路认证。** 已完成本地真实 Jev 调用与原生 OMP `-p` 链路验证；交互式 Muse Spark、代理传输、真实 renderer crash 与任意用户应用仍未验证。已完成的测试及环境限制见 [docs/validation.md](docs/validation.md)。
 
 ## 1. 安装
 
@@ -116,6 +116,14 @@ omp -e /absolute/path/to/jev-page-tester/.omp/extensions/qa.js
 ```
 
 先 `npm run build` 再加载扩展。配置和产物目录始终以本仓库为根，不是被测应用的代码目录。
+
+非交互冒烟验证（已验证可行）：
+
+```bash
+omp -e /absolute/path/to/jev-page-tester/.omp/extensions/qa.js -p "调用 qa_open ..."
+```
+
+`-p` 模式只会暴露 `qa_*` 工具，不提供 `/qa-stop` 斜杠命令；该命令需在交互式 TUI 中验证。
 
 给 Muse 的起始指令可以直接使用 [prompts/explore.md](prompts/explore.md)，例如：
 
