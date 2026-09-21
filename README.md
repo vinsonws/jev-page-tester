@@ -25,6 +25,7 @@ Muse Spark / OMP
 - 记录真实操作、输入、定位依据、调用时序；重放不调用模型，也不静默更换目标。
 - 支持取消、每会话互斥、进程隔离、精确 origin 白名单、输入/输出限额与本地脱敏。
 - 截图和 Playwright trace 默认关闭，显式启用后可留证；截图可按需返回主模型。
+- 可附加到你已登录的 Chrome（`attach: true` + `cdpEndpoint`），Jev 直接操作那个真实窗口；你的登录态、其他标签页和 Chrome 进程都不受影响。
 
 **初始验证不是全链路认证。** 已完成本地真实 Jev 调用与原生 OMP `-p` 链路验证；交互式 Muse Spark、代理传输、真实 renderer crash 与任意用户应用仍未验证。已完成的测试及环境限制见 [docs/validation.md](docs/validation.md)。
 
@@ -83,7 +84,6 @@ JEV_MODEL=jev-1.13.0
 ### 代理与可见 Chrome
 
 官方 Jev 的 HTTP 代理可单独配置，不需要本项目启用 TUN：
-
 ```dotenv
 QA_JEV_PROXY=http://127.0.0.1:1080
 ```
@@ -100,6 +100,41 @@ QA_BROWSER_EXECUTABLE=/Applications/Google Chrome.app/Contents/MacOS/Google Chro
 ```
 
 浏览器始终是测试器拥有的独立会话，不连接日常 Chrome profile。可在有界面窗口中人工登录专用测试账号；需要新会话加载已保存的登录态时，设置 `QA_STORAGE_STATE` 为 Playwright storageState 文件绝对路径。首版不提供登录态导出工具，人工登录动作不在重放记录中。
+
+### 附加到你正在用的 Chrome（attach 模式）
+
+默认模式由测试器自己启动一个独立浏览器。attach 模式改为**附加到你已经开着的 Chrome**，Jev 操作的就是那个真实浏览器窗口：你自己登录好的账号、扩展、已打开的页面都在，你可以实时看到每次点击。
+
+前提：Chrome 136 起 `--remote-debugging-port` 在**默认 profile 目录下会被静默忽略**，所以必须用 `--user-data-dir` 指向一个专用目录来启动：
+
+```bash
+# macOS：完全退出 Chrome 后执行
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="$HOME/qa-chrome-profile" \
+  --remote-debugging-port=9222
+```
+
+然后用该窗口**手动登录**你的测试账号（这个登录动作不进重放记录），在 `qa.config.json` 里配置：
+
+```json
+{ "cdpEndpoint": "http://127.0.0.1:9222" }
+```
+
+或用环境变量 `QA_CDP_ENDPOINT=http://127.0.0.1:9222`。之后给 Muse 的指令里 `qa_open` 加 `attach: true`：
+
+```json
+{ "url": "https://你的测试环境", "attach": true }
+```
+
+attach 模式的安全边界（已在自动化测试中锁定）：
+
+- 测试器**只会附加到你启动时那个 profile**，且只用 `browser.newContext()` 创建的独立 context；不会碰你已有的标签页。
+- 该 context **不继承你的登录 cookie**，Jev 看到的页面拿不到你的会话凭据。
+- 你的其他标签页、窗口和 profile 完全不被驱动，也不会被关闭。
+- `qa_close`、取消、预算耗尽、进程退出都只关闭测试器自己的 context，**你的 Chrome 进程始终不会被这个工具杀掉**；取消或异常同样只断开连接。
+- origin 白名单、危险操作过滤、输入限额与默认模式完全一致，不因附加而放宽。
+
+不要在附加窗口里操作你自己的真实账号数据；这仍是测试器，不是安全沙盒。
 
 ## 3. 在 OMP 中使用
 

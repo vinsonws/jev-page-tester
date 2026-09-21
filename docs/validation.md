@@ -43,15 +43,42 @@ Operator-supplied `TYPESAFE_API_KEY` present; these are billable live runs, not 
   - `qa_close` completed normally; no orphaned `dist/src/worker.js` process or Playwright-managed browser remained.
   - Verified separately that the error path works: `qa_open` against an unreachable origin returned `net::ERR_CONNECTION_REFUSED` without creating a session.
 
+## Attached-Chrome mode executed against real system Chrome — 2026-09-21
+
+macOS, system Google Chrome **153.0.8010.48**, CDP `http://127.0.0.1:9222`, dedicated
+`--user-data-dir` profile (Chrome 136+ silently ignores `--remote-debugging-port` on the default
+profile, so a dedicated profile is mandatory). Local fixture served on `127.0.0.1:4173`.
+
+- Verified `cdpEndpoint`/`QA_CDP_ENDPOINT` config plumbing and that `qa_open(attach: true)` reaches
+  `chromium.connectOverCDP`, records an `attached_browser` event, and drives the fixture page:
+  5 visible controls, `attached_browser` event id 1.
+- Full `qa_open(attach) → qa_explore → qa_close` through native OMP 18.2.6 `-p`, with a real
+  operator session cookie seeded into the attached profile:
+  - Real Jev decisions: `a0` fill (p=0.68, 1006 tokens) → `a1` click (p=1.0, 1034 tokens) →
+    `done` (p=0.9, 1048 tokens). 2 actions executed. Result state `Records: 1`, title `omp-attach-2`.
+  - `qa_close` returned `closed: true`.
+  - After the run, the attached Chrome was still alive with exactly one context containing the
+    operator's pages, and the `operator_session` cookie intact. The tester's context was gone.
+- Automated regression tests in `tests/browser.test.ts` (12 browser tests total, 0 skipped,
+  `QA_DOM_ONLY` unset) lock the attach contract:
+  - attached Chrome is driven through an isolated context that does not inherit profile cookies,
+    the operator tab is not navigated, and the Chrome process survives `qa_close`;
+  - cancelling an attached session returns `cancelled`, tears down only the tester's page, and
+    leaves the attached Chrome alive.
+- Also observed (not a defect): one attach mission returned `blocked` because Jev's confidence on
+  the input-to-field mapping fell below `minProbability`; no mutation occurred and no record was
+  created. This is the documented `blocked` contract, not a silent fallback.
+
 ## Still not verified
 
-Real Jev calls are now verified locally (single-fixture scope only). Remaining gaps:
+Real Jev calls and the attached-Chrome path are now verified locally (single-fixture scope only). Remaining gaps:
 
 - Muse Spark as an interactive OMP session — only the non-interactive `omp -p` supervisor path was exercised; no interactive Muse-driven multi-mission investigation.
 - Interactive OMP commands: `/qa-stop` is registered by the extension but was not invoked through an interactive TUI session. It was not exercised in the `-p` path, which exposes tools only, not slash commands.
 - `QA_JEV_PROXY` proxy transport through the official SDK.
 - Real renderer process crash (`crash`), iframe/Shadow DOM/canvas/file upload/multi-tab/visual regression.
 - Arbitrary user applications, production data, and any backend state reset.
+- Attached mode against a real login session of an actual application (only a seeded synthetic cookie was used) and against an interactive visible window the operator watches.
 - Probability quality of `jev-1.13.0` beyond these three/five decisions; `minProbability=0.65` remains an uncalibrated engineering default.
 
 ## Executed in the creation environment

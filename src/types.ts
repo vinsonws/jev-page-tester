@@ -17,6 +17,8 @@ export interface Config {
   model: string;
   executablePath?: string;
   browserProxy?: string;
+  /** CDP endpoint of an operator-owned Chrome to attach to instead of launching a browser. */
+  cdpEndpoint?: string;
 }
 
 export interface Target {

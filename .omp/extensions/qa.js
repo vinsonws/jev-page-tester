@@ -9,8 +9,8 @@ export default function qaExtension(pi) {
   const optionalNumber = () => z.number().optional();
   const session = { sessionId: z.string() };
   const tools = [
-    ['open', 'Open an authorized test page in a dedicated managed browser. Operator configuration controls origins. Never use a personal production account.',
-      z.object({ url: z.string() })],
+    ['open', 'Open an authorized test page in a dedicated managed browser. Operator configuration controls origins. Never use a personal production account. Set attach=true to drive the operator-configured CDP Chrome instead: that Chrome is never closed by this tool and its other tabs are not touched. Requires an operator-configured cdpEndpoint.',
+      z.object({ url: z.string(), attach: z.boolean().optional() })],
     ['explore', 'Delegate one bounded exploratory testing mission to official Jev. Supply exact synthetic input cases; preserve invalid inputs. This does not certify PASS. Do not use another browser tool concurrently. Stop and inspect anomalies.',
       z.object({ ...session, objective: z.string(),
         inputs: z.array(z.object({ field: z.string(), value: z.string() })).optional(),

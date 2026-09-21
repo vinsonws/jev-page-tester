@@ -10,6 +10,8 @@
 
 返回 `sessionId`、页面摘要、最近事件和本地产物目录。打开独立浏览器；默认不采集截图。浏览器已打开不代表应用通过验证。
 
+`attach: true`（可选）改为附加到操作者已启动的 CDP Chrome（需 `qa.config.json` 的 `cdpEndpoint` 或 `QA_CDP_ENDPOINT`）。此时事件里会出现 `attached_browser`，说明测试器不会关闭该 Chrome。附加时 origin 白名单、危险操作过滤和限额与默认模式一致，不会放宽。测试器只用 `newContext()` 创建的独立 context，不继承你的登录 cookie，也不驱动你已有的标签页。
+
 ## qa_explore
 
 ```json

@@ -36,6 +36,17 @@ SDK 可以对网络请求重试一次；对浏览器动作不重试。模型调�
 
 **这不是浏览器安全沙盒或完整 DLP。** 浏览器自身活动、允许的后端以及其他 OMP 工具仍是独立边界；名称过滤也无法理解所有破坏性动作。只在授权测试环境运行。
 
+## 附加模式（操作者已有的 Chrome）
+
+默认由测试器 `chromium.launch` 自己启动浏览器。配置 `cdpEndpoint` 后可用 `qa_open(attach: true)` 改为 `chromium.connectOverCDP` 附加到操作者启动的 Chrome，让 Jev 操作真实窗口和已登录账号。
+
+- Chrome 136 起 `--remote-debugging-port` 在默认 profile 目录下被静默忽略，因此必须用 `--user-data-dir` 指向专用目录启动；附加只指向那个专用 profile。
+- 测试器在附加浏览器上调用 `newContext()` 获得独立 context，**不继承该 profile 的 cookie**；已在自动化测试中断言 Jev 驱动的页面读不到操作者会话 cookie。
+- 只驱动自己创建的那一个 page；操作者已有标签页、窗口和其他 profile 不被驱动也不被关闭。
+- 关闭路径按附加与否分叉：附加时只 `context.close()` 断开自己的 context，**不调用 `browser.close()`**；默认模式才关闭自己启动的浏览器。取消、预算耗尽、异常退出同样只断开，已在测试中锁定附加 Chrome 在这些路径下保持存活。
+- origin 白名单、危险操作名称过滤、`blockedSelectors`、输入/输出限额与默认模式共用同一份 `Config`，附加不会放宽任何权限；模型参数依旧只能缩小预算。
+- 人工登录动作仍不进入重放记录；重放在附加模式下同样不调用模型。
+
 ## 异常与断言
 
 `pageerror` 是未捕获的页面 JavaScript 异常，`crash` 是 renderer 崩溃，不应混为一谈。

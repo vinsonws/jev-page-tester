@@ -5,6 +5,7 @@
   "captureArtifacts": false,
   "allowRiskyActions": false,
   "blockedSelectors": ["[data-qa-private]"],
+  "cdpEndpoint": "http://127.0.0.1:9222",
   "maxActionsPerMission": 30,
   "maxMissionMs": 120000,
   "maxSessionActions": 200,

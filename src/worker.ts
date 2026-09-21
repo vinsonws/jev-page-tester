@@ -35,7 +35,7 @@ async function main(): Promise<void> {
       const progress = (message: string) => reply({ id, type: 'progress', message: redact(message) });
       let data: unknown;
       switch (request.method) {
-        case 'open': data = await runner.open(text(p.url, 'URL', 4000), controller.signal); break;
+        case 'open': data = await runner.open(text(p.url, 'URL', 4000), controller.signal, flag(p.attach, false)); break;
         case 'explore': data = await runner.explore(text(p.sessionId, 'sessionId', 100), p, controller.signal, progress); break;
         case 'inspect': data = await runner.inspect(text(p.sessionId, 'sessionId', 100), flag(p.screenshot, false)); break;
         case 'replay': data = await runner.replay(text(p.runId, 'runId', 100), flag(p.resetConfirmed, false), controller.signal, progress); break;

@@ -29,6 +29,7 @@ export function parseConfig(raw: unknown): Config {
     maxSessions: integer(c.maxSessions, 3, 1, 5),
     model: text(c.model ?? process.env.JEV_MODEL ?? 'jev-1.13.0', 'model', 100),
     executablePath: process.env.QA_BROWSER_EXECUTABLE || undefined,
+    cdpEndpoint: process.env.QA_CDP_ENDPOINT || (c.cdpEndpoint === undefined ? undefined : text(c.cdpEndpoint, 'cdpEndpoint', 300)),
     browserProxy: c.browserProxy === undefined ? undefined : text(c.browserProxy, 'browserProxy', 1000),
   };
 }

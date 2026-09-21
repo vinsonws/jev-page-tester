@@ -26,14 +26,14 @@ export class Runner {
     if (session.busy) throw new Error('Session is busy; parallel operations on one page are refused');
     return session;
   }
-  async open(url: string, signal = new AbortController().signal): Promise<RunResult> {
+  async open(url: string, signal = new AbortController().signal, attach = false): Promise<RunResult> {
     assertUrl(url, this.config); signal.throwIfAborted();
     if ([...this.sessions.values()].filter(s => !s.closed).length + this.opening >= this.config.maxSessions) throw new Error('Close an existing session before opening another');
     this.opening++;
     const recorder = new Recorder(resolve(this.root), url, this.redact, this.config.model);
     let driver: BrowserDriver | undefined;
     try {
-      driver = await this.openBrowser(url, this.config, recorder);
+      driver = attach ? await BrowserDriver.openAttached(url, this.config, recorder) : await this.openBrowser(url, this.config, recorder);
       signal.throwIfAborted();
       const session: Session = { recorder, driver, busy: false, closed: false, decisions: 0, reportedThrough: 0, history: [], checkpoints: [] };
       this.sessions.set(recorder.id, session);

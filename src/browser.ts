@@ -58,10 +58,28 @@ export class BrowserDriver {
   private fixtureUrl?: string;
   private pageUrl(): string { return this.fixtureUrl ?? this.page.url(); }
   private constructor(readonly browser: Browser, readonly context: BrowserContext,
-    readonly page: Page, readonly config: Config, readonly recorder: Recorder) {}
+    readonly page: Page, readonly config: Config, readonly recorder: Recorder,
+    /** True when the browser belongs to the operator: never close it, only detach. */
+    private readonly attached = false) {}
 
   static open(url: string, c: Config, recorder: Recorder): Promise<BrowserDriver> {
     return this.create(url, c, recorder);
+  }
+  /**
+   * Attach to an operator-owned Chrome via CDP instead of launching our own browser.
+   * Only that context's pages are driven and torn down; the Chrome process is never closed.
+   * The operator's other tabs and profiles stay untouched.
+   */
+  static async openAttached(url: string, c: Config, recorder: Recorder): Promise<BrowserDriver> {
+    assertUrl(url, c);
+    const endpoint = c.cdpEndpoint ?? '';
+    if (!endpoint) throw new Error('Attached browser mode requires a CDP endpoint');
+    const browser = await chromium.connectOverCDP(endpoint, { timeout: 10000 });
+    try {
+      // A dedicated context keeps our route interception off the operator's logged-in tabs.
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: false });
+      return await this.instrument(url, c, recorder, browser, context, true);
+    } catch (e) { await browser.close(); throw e; }
   }
   /** Offline test seam only. Never called by the production worker. No URL navigation occurs. */
   static openDomFixture(url: string, c: Config, recorder: Recorder, html: string): Promise<BrowserDriver> {
@@ -75,7 +93,13 @@ export class BrowserDriver {
       const context = await browser.newContext({ viewport: { width: 1280, height: 800 },
         serviceWorkers: 'block', acceptDownloads: false,
         ...(process.env.QA_STORAGE_STATE ? { storageState: process.env.QA_STORAGE_STATE } : {}) });
-      const denied = new WeakSet<object>();
+      return await this.instrument(url, c, recorder, browser, context, false, fixtureHtml);
+    } catch (e) { await browser.close(); throw e; }
+  }
+  /** Shared page instrumentation. Owns nothing about browser lifetime. */
+  private static async instrument(url: string, c: Config, recorder: Recorder, browser: Browser,
+    context: BrowserContext, attached: boolean, fixtureHtml?: string): Promise<BrowserDriver> {
+    const denied = new WeakSet<object>();
       await context.route('**/*', async route => {
         const request = route.request();
         if (permittedRequest(request.url(), c, request.isNavigationRequest())) {
@@ -92,7 +116,7 @@ export class BrowserDriver {
         else { recorder.event('websocket_block', 'policy', safeUrl(url)); socket.close(); }
       });
       const page = await context.newPage();
-      const driver = new BrowserDriver(browser, context, page, c, recorder);
+      const driver = new BrowserDriver(browser, context, page, c, recorder, attached);
       page.setDefaultTimeout(c.actionTimeoutMs);
       page.setDefaultNavigationTimeout(c.actionTimeoutMs);
       page.on('pageerror', e => recorder.event('pageerror', 'runtime', e.message));
@@ -116,8 +140,8 @@ export class BrowserDriver {
         await page.setContent(fixtureHtml, { waitUntil: 'domcontentloaded' });
         recorder.event('dom_fixture_mode', 'observation', 'Offline DOM fixture: navigation/network behavior is NOT verified.');
       } else await page.goto(url, { waitUntil: 'domcontentloaded' });
+      if (attached) recorder.event('attached_browser', 'observation', 'Driving an operator-owned Chrome over CDP; this process never closes it.');
       return driver;
-    } catch (e) { await browser.close(); throw e; }
   }
 
   async observe(): Promise<Snapshot> {
@@ -234,7 +258,13 @@ export class BrowserDriver {
   private async finishClose(): Promise<void> {
     this.closed = true;
     await this.disposeHandles();
-    try { if (this.traced) await this.context.tracing.stop({ path: join(this.recorder.dir, 'trace.zip') }); }
-    finally { await this.browser.close(); }
+    try {
+      if (this.traced) await this.context.tracing.stop({ path: join(this.recorder.dir, 'trace.zip') });
+      // An attached browser belongs to the operator: closing it would kill their session.
+      // Closing our own context also drops the routes we installed on it.
+      if (this.attached) await this.context.close().catch(() => {});
+    } finally {
+      if (!this.attached) await this.browser.close().catch(() => {});
+    }
   }
 }

@@ -4,11 +4,13 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startFixture, fixtureHtml } from '../examples/fixture.js';
+import { chromium } from 'playwright';
 import { parseConfig } from '../src/config.js';
 import { Runner } from '../src/runner.js';
 import { BrowserDriver } from '../src/browser.js';
 import { Recorder } from '../src/recorder.js';
 import { ScriptedDecider } from '../src/demo-decider.js';
+import { pause } from '../src/validation.js';
 import type { Decider, Config } from '../src/types.js';
 
 const domOnly = process.env.QA_DOM_ONLY === '1';
@@ -129,4 +131,104 @@ test('mission deadline stops an unresponsive decider and keeps cached evidence r
     const report = JSON.parse(readFileSync(join(result.artifactsDir, 'report.json'), 'utf8'));
     assert.equal(report.status, 'budget_exhausted');
   } finally { await env.close(); }
+});
+// Attached mode drives an operator-owned Chrome over CDP. It needs a real Chromium with
+// remote debugging on a dedicated profile, so it is skipped in DOM-only mode.
+if (!domOnly) test('attached Chrome is driven but never closed by the tester', async () => {
+  const profile = mkdtempSync(join(tmpdir(), 'jev-attach-'));
+  const endpoint = 'http://127.0.0.1:9455';
+  // Stand up the operator-owned Chrome exactly as the operator would: dedicated profile,
+  // remote debugging on, plus a pre-existing tab and a pre-existing logged-in-looking cookie.
+  const owned = await chromium.launchPersistentContext(profile, {
+    headless: true, args: [`--remote-debugging-port=9455`],
+  });
+  try {
+    await owned.addCookies([{ name: 'operator_session', value: 'operator-value', domain: '127.0.0.1', path: '/' }]);
+    const operatorPage = await owned.newPage();
+    const fixture = await startFixture();
+    try {
+      await operatorPage.goto(fixture.url, { waitUntil: 'domcontentloaded' });
+      const root = mkdtempSync(join(tmpdir(), 'jev-attached-run-'));
+      try {
+        const base = parseConfig({ allowedOrigins: [fixture.url], headless: true, settleMs: 150, cdpEndpoint: endpoint });
+        const runner = new Runner(root, base, done());
+        const opened = await runner.open(fixture.url, new AbortController().signal, true);
+        assert.ok(opened.events.some(e => e.kind === 'attached_browser'), 'attach must be recorded as evidence');
+        // The tester must reach the page through its own context.
+        assert.ok(opened.snapshot!.targets.some(t => t.label === 'Title'));
+        const result = await runner.explore(opened.sessionId, { objective: 'Observe attached page' });
+        assert.equal(result.status, 'stopped');
+        // While the session is live, the page the tester drives must not be the operator's
+        // tab and must not carry the operator's profile cookie. Assert the property, not a
+        // context count: Playwright's newContext() on a persistent-context Chrome
+        // re-enumerates contexts, so the operator's context is not reliably listed.
+        const live = await chromium.connectOverCDP(endpoint);
+        try {
+          const allPages = live.contexts().flatMap(c => c.pages());
+          // Object identity does not survive a second CDP connection, so identify pages by
+          // the fact that the operator tab is the only one that can see its own cookie.
+          // about:blank pages cannot be queried for cookies, so restrict to the test origin.
+          const onOrigin = allPages.filter(p => p.url() === `${fixture.url}/`);
+          const seen = await Promise.all(onOrigin.map(async p => ({ page: p, cookie: await p.evaluate(() => document.cookie) })));
+          assert.equal(seen.length, 2, 'exactly the operator tab and the tester page must be open on the test origin');
+          const withOperatorCookie = seen.filter(s => s.cookie.includes('operator_session'));
+          assert.equal(withOperatorCookie.length, 1, 'only the operator tab may see the operator cookie');
+          const tester = seen.filter(s => s !== withOperatorCookie[0]);
+          assert.equal(tester.length, 1, 'tester must drive exactly one page');
+          assert.equal(tester[0]!.cookie, '', 'tester page must not see the operator session cookie');
+        } finally { await live.close(); }
+        await runner.close(opened.sessionId);
+        // The operator's Chrome and their pre-existing tab must survive the whole run.
+        const alive = await fetch(`${endpoint}/json/version`).then(r => r.ok).catch(() => false);
+        assert.equal(alive, true, 'attached Chrome must stay alive after qa_close');
+        assert.equal(operatorPage.url(), `${fixture.url}/`, 'operator tab must not be navigated away');
+        assert.equal(await operatorPage.title(), 'Jev QA fault fixture', 'operator tab must still show the same page');
+        // owned.pages() counts every page in every context, so the surviving operator tab is
+        // identified by URL rather than by a count that would also include tester pages.
+        assert.ok(owned.pages().some(p => p === operatorPage), 'operator tab must survive');
+        // The tester's context must be separate from the operator's, and must be gone after
+        // qa_close, leaving only the operator's context with their cookie intact.
+        const probe = await chromium.connectOverCDP(endpoint);
+        try {
+          // Object identity does not survive a second CDP connection; assert properties.
+          const onOrigin = probe.contexts().flatMap(c => c.pages()).filter(p => p.url() === `${fixture.url}/`);
+          assert.equal(onOrigin.length, 1, 'only the operator tab may remain on the test origin');
+          const cookies = (await Promise.all(probe.contexts().map(c => c.cookies()))).flat();
+          assert.equal(cookies.filter(c => c.name === 'operator_session').length, 1, 'operator profile cookie must be untouched');
+        } finally { await probe.close(); }
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally { await fixture.close(); }
+  } finally { await owned.close().catch(() => {}); rmSync(profile, { recursive: true, force: true }); }
+});
+if (!domOnly) test('cancelling an attached session detaches without closing the operator Chrome', async () => {
+  const profile = mkdtempSync(join(tmpdir(), 'jev-attach-cancel-'));
+  const endpoint = 'http://127.0.0.1:9456';
+  const owned = await chromium.launchPersistentContext(profile, {
+    headless: true, args: [`--remote-debugging-port=9456`],
+  });
+  try {
+    const fixture = await startFixture();
+    try {
+      const root = mkdtempSync(join(tmpdir(), 'jev-attached-cancel-'));
+      try {
+        const base = parseConfig({ allowedOrigins: [fixture.url], headless: true, settleMs: 150, cdpEndpoint: endpoint });
+        // A decider that never resolves: cancellation must be what ends the mission.
+        const runner = new Runner(root, base, { decide: () => new Promise(() => {}) });
+        const opened = await runner.open(fixture.url, new AbortController().signal, true);
+        const controller = new AbortController();
+        const mission = runner.explore(opened.sessionId, { objective: 'Cancel me', maxDurationMs: 30000 }, controller.signal);
+        await pause(400, controller.signal);
+        controller.abort(new Error('Operator cancelled'));
+        const result = await mission;
+        assert.equal(result.status, 'cancelled');
+        const alive = await fetch(`${endpoint}/json/version`).then(r => r.ok).catch(() => false);
+        assert.equal(alive, true, 'attached Chrome must survive cancellation');
+        const probe = await chromium.connectOverCDP(endpoint);
+        try {
+          const onOrigin = probe.contexts().flatMap(c => c.pages()).filter(p => p.url() === `${fixture.url}/`);
+          assert.equal(onOrigin.length, 0, 'tester page must be torn down on cancellation');
+        } finally { await probe.close(); }
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally { await fixture.close(); }
+  } finally { await owned.close().catch(() => {}); rmSync(profile, { recursive: true, force: true }); }
 });
