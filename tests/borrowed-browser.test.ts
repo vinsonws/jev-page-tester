@@ -49,7 +49,10 @@ test('borrowed tab retains login, storage, draft, viewport; switching active tab
     await driver.close(); await driver.close();
     assert.equal(env.releases(), 1); assert.equal(env.page.isClosed(), false); assert.equal(other.isClosed(), false);
     assert.ok((await env.context.cookies()).some(c => c.name === 'session-canary'));
-    assert.equal(env.page.listenerCount('pageerror'), 0);
+    const countAfterRelease = driver.recorder.events.length;
+    await env.page.evaluate(() => console.error('after-release-probe'));
+    await env.page.waitForTimeout(50);
+    assert.equal(driver.recorder.events.length, countAfterRelease, 'monitor callbacks must be removed after release');
     await assert.rejects(driver.observe(), /released/);
   } finally { await driver?.close(); await env.close(); }
 });

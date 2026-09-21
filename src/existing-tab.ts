@@ -31,8 +31,7 @@ export async function connectExistingTab(
   if (!config.allowExistingTab) throw new Error('existing-tab requires operator allowExistingTab=true');
   assertUrl(expectedUrl, config);
   signal.throwIfAborted();
-  // Do not let unrelated MCP environment variables change this connection into a
-  // launch/CDP/storage-import session or skip the operator approval dialog.
+  // Do not let unrelated MCP settings skip manual approval or change modes.
   for (const name of ['PLAYWRIGHT_MCP_EXTENSION_TOKEN', 'PLAYWRIGHT_MCP_CDP_ENDPOINT',
     'PLAYWRIGHT_MCP_ENDPOINT', 'PLAYWRIGHT_MCP_ISOLATED', 'PLAYWRIGHT_MCP_CONFIG',
     'PLAYWRIGHT_MCP_INIT_PAGE', 'PLAYWRIGHT_MCP_INIT_SCRIPT', 'PLAYWRIGHT_MCP_STORAGE_STATE',
@@ -42,7 +41,6 @@ export async function connectExistingTab(
   const dir = mkdtempSync(join(tmpdir(), 'jev-extension-'));
   const hookPath = join(dir, 'page-hook.cjs');
   // This runs on Node's Playwright Page object, NOT in the page JavaScript realm.
-  // A unique module per connection prevents cross-session capture.
   writeFileSync(hookPath, `exports.pages = []; exports.cancelled = false;\nexports.default = async ({ page }) => {\n  if (exports.cancelled) { await page.context().browser()?.close().catch(() => {}); return; }\n  if (!exports.pages.includes(page)) exports.pages.push(page);\n};\n`, { mode: 0o600 });
   const hook = require(hookPath) as HookState;
   const timer = new AbortController();
@@ -53,7 +51,7 @@ export async function connectExistingTab(
   let closing: Promise<void> | undefined;
   const release = (): Promise<void> => closing ??= (async () => {
     hook.cancelled = true;
-    // Closing a connectOverCDP Browser releases its transport, not Chrome.
+    // A CDP Browser.close releases its transport, not the external Chrome process.
     // Never invoke page.close(), context.close(), or browser_close here.
     const browsers = new Set<Browser>();
     for (const p of hook.pages) { const b = p.context().browser(); if (b) browsers.add(b); }
@@ -71,8 +69,6 @@ export async function connectExistingTab(
       factory ? Promise.resolve({ createConnection: factory }) : import('@playwright/mcp'),
     ]);
     combined.throwIfAborted();
-    // Private in-memory MCP: only a read-only tab-list request triggers the
-    // official chooser. Actual operations reuse our guarded Playwright driver.
     server = await mcp.createConnection({
       extension: true, browser: { isolated: false, initPage: [hookPath], initScript: [], contextOptions: {} },
       capabilities: ['core-tabs'], webmcp: false, snapshot: { mode: 'none' },
@@ -89,7 +85,12 @@ export async function connectExistingTab(
     const response = await abortable(client.callTool({ name: 'browser_tabs', arguments: { action: 'list' } }, undefined,
       { signal: combined, timeout: config.extensionConnectTimeoutMs }), combined);
     if (response.isError) {
-      const message = response.content.filter(p => p.type === 'text').map(p => p.text).join('\n');
+      const blocks: unknown[] = Array.isArray(response.content) ? response.content : [];
+      const message = blocks.flatMap((block: unknown) => {
+        if (!block || typeof block !== 'object' || !('type' in block) || block.type !== 'text' ||
+          !('text' in block) || typeof block.text !== 'string') return [];
+        return [block.text];
+      }).join('\n');
       throw new Error(`Playwright extension connection failed: ${message.slice(0, 1500)}`);
     }
     combined.throwIfAborted();
