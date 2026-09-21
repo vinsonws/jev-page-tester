@@ -13,6 +13,20 @@ This file distinguishes execution evidence from API/document review. Update it a
 - The scripted headless demo completed successfully and reported the intended duplicate-submit anomaly.
 - This validates the browser/runner test paths on the pinned dependencies. It does NOT validate real Jev calls, Muse Spark, native OMP, proxy transport, arbitrary user apps or renderer crash detection.
 
+## Executed in this working copy — 2026-09-21 (macOS, Node 24.20.0, ARM64)
+
+Recorded for commit `dc6204b` + the lockfile commit. These are local runs, not CI.
+
+- `npm install`: succeeded against the pinned `package.json` and generated `package-lock.json` (lockfileVersion 3, 8 packages); `npm ci` then reproduced the same tree from that lockfile.
+- `npx playwright install chromium`: downloaded Chromium 140.0.7339.186 (playwright build v1193), matching the CI build.
+- `npm run typecheck`: passed (TypeScript 5.8.3).
+- `npm test`: 16 unit/stdio/extension-registration tests passed, 0 skipped.
+- `npm run test:browser`: 10 browser tests passed, 0 skipped, `QA_DOM_ONLY` unset — real local HTTP navigation, HTTP 503, burst-submit + replay, pageerror, stale target, cancellation, screenshot opt-in, deadline, model outage.
+- `npm run demo -- --headless`: completed with `status: anomaly`, the intended duplicate-submit finding. Artifacts removed afterward.
+- `npm run check`: typecheck + unit + browser all green in one pass.
+
+Still not validated locally: real official-Jev calls (no API key), native OMP loading, Muse Spark round trip, proxy transport, real renderer crash, arbitrary user apps.
+
 ## Executed in the creation environment
 
 - `npm run typecheck`: passed with TypeScript 5.8.3 / Node.js 22.16.0.
@@ -23,7 +37,7 @@ This file distinguishes execution evidence from API/document review. Update it a
 
 ## Creation-environment limitations and remaining integration gaps
 
-- The container cannot resolve/reach npm. `npm install` / lockfile generation and a clean install were not executed inside that container. Clean installation was subsequently verified in GitHub Actions; the generated lockfile has not been committed.
+- The container cannot resolve/reach npm, so `npm install`, lockfile generation and a clean install were not executed there. A lockfile was later generated and committed from a networked machine; `npm ci` was verified against it. Clean installation was also verified in GitHub Actions.
 - The system browser has a managed URLBlocklist that forbids URL navigation. A normal local HTTP demo failed with `ERR_BLOCKED_BY_ADMINISTRATOR`. That policy was not modified. Production navigation, HTTP instrumentation and request interception are **not** validated by DOM-only mode.
 - The TypeSafe SDK boundary was checked against official 0.6.0 source/docs and exercised with an injected client-shaped test double. The npm SDK itself, real API keys, billing, probability quality and proxy transport were not exercised.
 - The OMP extension factory/tool registration was tested with a mock host. Native OMP loading and an actual Muse Spark tool-call round trip were not run.

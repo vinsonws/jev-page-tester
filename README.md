@@ -44,7 +44,7 @@ npm run build
 
 Windows PowerShell 将两条 `cp` 替换为 `Copy-Item` 即可。不要用 `sudo` 启动测试器。
 
-初始源码中的直接依赖已固定版本。创建环境无法访问 npm，未伪造 `package-lock.json`；首次联网安装后应审阅并提交生成的锁文件。
+初始源码中的直接依赖已固定版本；`package-lock.json` 已在可联网环境生成并提交，`npm ci` 可复现安装。
 
 ## 2. 配置官方 Jev 和测试范围
 
