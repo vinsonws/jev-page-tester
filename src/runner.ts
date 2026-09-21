@@ -1,24 +1,32 @@
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve, join } from 'node:path';
-import type { Candidate, Check, Config, Decider, Progress, RunResult, RunStatus, Snapshot, ActionRecord } from './types.js';
+import type { BrowserMode, Candidate, Check, Config, Decider, Progress, RunResult, RunStatus, Snapshot, ActionRecord } from './types.js';
 import { BrowserDriver } from './browser.js';
 import { Recorder } from './recorder.js';
 import { assertUrl, buildCandidates, makeRedactor, redactDeep } from './policy.js';
-import { parseMission } from './config.js';
+import { parseBrowserMode, parseMission } from './config.js';
 import { abortable, errorText, object, pause, text } from './validation.js';
 
 interface Session {
-  recorder: Recorder; driver: BrowserDriver; snapshot?: Snapshot;
+  recorder: Recorder; driver: BrowserDriver; snapshot?: Snapshot; mode: BrowserMode;
   busy: boolean; closed: boolean; decisions: number; reportedThrough: number;
   history: string[]; checkpoints: { afterAction: number; checks: Check[] }[];
+}
+/** Conservative DOM fingerprint, NOT proof of equivalent cookies/backend state. */
+export function snapshotFingerprint(s: Snapshot): string {
+  return createHash('sha256').update(JSON.stringify([s.url, s.title, s.text,
+    s.targets.map(t => [t.identity, t.value, t.options])])).digest('hex');
 }
 const anomalyKinds = new Set(['pageerror', 'crash', 'http_5xx', 'assertion_failed']);
 export class Runner {
   private readonly sessions = new Map<string, Session>();
   private opening = 0;
+  private openingExisting = false;
   private readonly redact = makeRedactor();
   constructor(readonly root: string, readonly config: Config, private readonly decider: Decider,
-    private readonly openBrowser = BrowserDriver.open.bind(BrowserDriver)) {}
+    private readonly openBrowser = BrowserDriver.open.bind(BrowserDriver),
+    private readonly openExisting = BrowserDriver.openExisting.bind(BrowserDriver)) {}
   private get(id: string): Session {
     const session = this.sessions.get(id);
     if (!session) throw new Error('Unknown session ID');
@@ -26,28 +34,42 @@ export class Runner {
     if (session.busy) throw new Error('Session is busy; parallel operations on one page are refused');
     return session;
   }
-  async open(url: string, signal = new AbortController().signal, attach = false): Promise<RunResult> {
+  async open(url: string, signal = new AbortController().signal, modeOrAttach?: BrowserMode | boolean): Promise<RunResult> {
+    const mode = modeOrAttach === undefined ? this.config.browserMode : typeof modeOrAttach === 'boolean'
+      ? (modeOrAttach ? 'cdp-isolated' : 'launch-isolated') : parseBrowserMode(modeOrAttach);
     assertUrl(url, this.config); signal.throwIfAborted();
+    if (mode === 'existing-tab') {
+      if (!this.config.allowExistingTab) throw new Error('existing-tab requires operator allowExistingTab=true');
+      if (this.openingExisting || [...this.sessions.values()].some(s => !s.closed && s.mode === mode)) {
+        throw new Error('Release the existing-tab session with qa_close before authorizing another tab or replay');
+      }
+    }
     if ([...this.sessions.values()].filter(s => !s.closed).length + this.opening >= this.config.maxSessions) throw new Error('Close an existing session before opening another');
-    this.opening++;
+    this.opening++; if (mode === 'existing-tab') this.openingExisting = true;
     const recorder = new Recorder(resolve(this.root), url, this.redact, this.config.model);
     let driver: BrowserDriver | undefined;
     try {
-      driver = attach ? await BrowserDriver.openAttached(url, this.config, recorder) : await this.openBrowser(url, this.config, recorder);
+      driver = mode === 'existing-tab' ? await this.openExisting(url, this.config, recorder, signal)
+        : mode === 'cdp-isolated' ? await BrowserDriver.openAttached(url, this.config, recorder)
+        : await this.openBrowser(url, this.config, recorder);
       signal.throwIfAborted();
-      const session: Session = { recorder, driver, busy: false, closed: false, decisions: 0, reportedThrough: 0, history: [], checkpoints: [] };
+      const session: Session = { recorder, driver, mode, busy: false, closed: false, decisions: 0, reportedThrough: 0, history: [], checkpoints: [] };
       this.sessions.set(recorder.id, session);
       session.snapshot = await abortable(driver.observe(), signal);
+      recorder.write('browser.json', { schemaVersion: 1, mode, initialUrl: session.snapshot.url,
+        initialFingerprint: snapshotFingerprint(session.snapshot), replayRequiresManualReset: mode === 'existing-tab' });
       await driver.screenshot();
-      return this.result(session, 'stopped', 0, 'Browser opened. Inspect the initial evidence before choosing a bounded mission.');
+      return this.result(session, 'stopped', 0, mode === 'existing-tab'
+        ? 'Authorized existing tab borrowed without navigation. Inspect its current state; qa_close releases control without closing the tab.'
+        : 'Browser opened. Inspect the initial evidence before choosing a bounded mission.');
     } catch (e) {
       recorder.event('open_error', 'harness', errorText(e));
       this.sessions.delete(recorder.id); await driver?.close().catch(() => {}); throw e;
-    } finally { this.opening--; }
+    } finally { this.opening--; if (mode === 'existing-tab') this.openingExisting = false; }
   }
   private result(s: Session, status: RunStatus, count: number, summary: string, persist = true): RunResult {
     const snapshot = s.snapshot ? redactDeep(s.snapshot, this.redact) as Snapshot : undefined;
-    const result: RunResult = { sessionId: s.recorder.id, status, actionsExecuted: count,
+    const result: RunResult = { sessionId: s.recorder.id, status, actionsExecuted: count, browserMode: s.mode,
       totalActions: s.recorder.actions.length, summary: this.redact(summary), events: s.recorder.events.slice(-30),
       snapshot, artifactsDir: s.recorder.dir, verdict: 'not_evaluated' };
     if (persist) s.recorder.report(result); return result;
@@ -151,6 +173,9 @@ export class Runner {
       if (combined.aborted) { cancelBrowser(); await s.driver.close().catch(() => {}); }
     } finally {
       clearTimeout(timer); combined.removeEventListener('abort', cancelBrowser); s.busy = false;
+      if (s.mode === 'existing-tab' && ['budget_exhausted', 'harness_error'].includes(status)) {
+        s.closed = true; await s.driver.close().catch(() => {});
+      }
       s.reportedThrough = s.recorder.events.length;
     }
     return this.result(s, status, s.recorder.actions.length - startCount, summary);
@@ -198,7 +223,15 @@ export class Runner {
         return { afterAction: p.afterAction, checks: parseMission({ objective: 'Replay saved assertions', checks: p.checks }, this.config).checks };
       });
     } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-    const opened = await this.open(text(manifest.startUrl, 'start URL', 4000), signal);
+    let environment: Record<string, unknown>;
+    try { environment = object(JSON.parse(readFileSync(join(dir, 'browser.json'), 'utf8'))); }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('Legacy run lacks browser-mode metadata; record a new run before replay');
+      throw e;
+    }
+    const mode = parseBrowserMode(environment.mode);
+    const startUrl = text(mode === 'existing-tab' ? environment.initialUrl : manifest.startUrl, 'start URL', 4000);
+    const opened = await this.open(startUrl, signal, mode);
     const s = this.get(opened.sessionId); s.busy = true;
     const combined = AbortSignal.any([signal, AbortSignal.timeout(this.config.maxMissionMs)]);
     const cancel = () => { s.closed = true; void s.driver.close().catch(() => {}); };
@@ -207,6 +240,9 @@ export class Runner {
     s.recorder.event('replay_source', 'observation', sourceId);
     const start = Date.now(); const originalStart = records[0]?.startedAtMs ?? start;
     try {
+      if (mode === 'existing-tab' && (!s.snapshot || snapshotFingerprint(s.snapshot) !== environment.initialFingerprint)) {
+        throw new Error('Existing-tab initial state mismatch; restore the original UI and data manually. No actions replayed');
+      }
       for (const checkpoint of checkpoints.filter(p => p.afterAction === 0)) {
         if (!(await this.checks(s, checkpoint.checks, combined))) status = 'anomaly';
       }
@@ -228,7 +264,7 @@ export class Runner {
       combined.removeEventListener('abort', cancel); s.busy = false;
       s.checkpoints = checkpoints.filter(p => p.afterAction <= s.recorder.actions.length);
       s.recorder.write('checkpoints.json', s.checkpoints);
-      if (combined.aborted) { cancel(); await s.driver.close().catch(() => {}); }
+      if (combined.aborted || mode === 'existing-tab') { cancel(); await s.driver.close().catch(() => {}); }
     }
     return { ...this.result(s, status, s.recorder.actions.length, summary), replayOf: sourceId };
   }

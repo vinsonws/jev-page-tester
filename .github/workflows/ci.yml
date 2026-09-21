@@ -1,7 +1,7 @@
 name: Check
 on:
   push:
-    branches: [main]
+    branches: [main, feat/existing-tab-extension]
   pull_request:
 permissions:
   contents: read
@@ -15,8 +15,12 @@ jobs:
         with:
           node-version: '22'
       - run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Export resolved lockfile during initial dependency upgrade
+        run: |
+          node -e 'console.log("QA_LOCKFILE_BEGIN"); console.log(Buffer.from(require("fs").readFileSync("package-lock.json")).toString("base64")); console.log("QA_LOCKFILE_END")'
       - run: npx playwright install --with-deps chromium
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:browser
+      - run: npm run test:mcp
       - run: npm run demo -- --headless

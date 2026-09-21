@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import { resolve } from 'node:path';
-import { loadConfig } from './config.js';
+import { loadConfig, resolveBrowserMode } from './config.js';
+import { ExtensionConnectCancelled } from './existing-tab.js';
 import { JevDecider } from './jev.js';
 import { Runner } from './runner.js';
 import { object, text, flag, errorText } from './validation.js';
@@ -35,7 +36,11 @@ async function main(): Promise<void> {
       const progress = (message: string) => reply({ id, type: 'progress', message: redact(message) });
       let data: unknown;
       switch (request.method) {
-        case 'open': data = await runner.open(text(p.url, 'URL', 4000), controller.signal, flag(p.attach, false)); break;
+        case 'open': {
+          const mode = resolveBrowserMode(config, p.mode, p.attach);
+          if (mode === 'existing-tab') progress('Approve Jev Page Tester in the Playwright browser extension and share exactly one existing tab. No navigation will be performed.');
+          data = await runner.open(text(p.url, 'URL', 4000), controller.signal, mode); break;
+        }
         case 'explore': data = await runner.explore(text(p.sessionId, 'sessionId', 100), p, controller.signal, progress); break;
         case 'inspect': data = await runner.inspect(text(p.sessionId, 'sessionId', 100), flag(p.screenshot, false)); break;
         case 'replay': data = await runner.replay(text(p.runId, 'runId', 100), flag(p.resetConfirmed, false), controller.signal, progress); break;
@@ -43,8 +48,12 @@ async function main(): Promise<void> {
         default: throw new Error('Unknown method');
       }
       reply({ id, type: 'result', data });
-    } catch (e) { reply({ id, type: 'error', error: redact(errorText(e)) }); }
-    finally { if (ownsController) controllers.delete(id); }
+    } catch (e) {
+      reply({ id, type: 'error', error: redact(errorText(e)) });
+      // Retire a worker with an unfinished permission dialog. A late approval
+      // must not revive a cancelled request; the bridge will restart next time.
+      if (e instanceof ExtensionConnectCancelled) await shutdown();
+    } finally { if (ownsController) controllers.delete(id); }
   })().catch(() => void shutdown()); });
 }
 main().catch(e => { process.stderr.write(`${errorText(e)}\n`); process.exitCode = 1; });

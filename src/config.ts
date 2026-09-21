@@ -1,9 +1,22 @@
 import { readFileSync } from 'node:fs';
 import { loadEnvFile } from 'node:process';
 import { resolve } from 'node:path';
-import type { Config, Mission, Check } from './types.js';
+import type { BrowserMode, Config, Mission, Check } from './types.js';
 import { object, text, integer, number, flag, strings } from './validation.js';
 
+export function parseBrowserMode(value: unknown): BrowserMode {
+  if (value !== 'launch-isolated' && value !== 'cdp-isolated' && value !== 'existing-tab') {
+    throw new Error('browser mode must be launch-isolated, cdp-isolated or existing-tab');
+  }
+  return value;
+}
+/** Legacy attach only means isolated CDP; it never means borrowing a logged-in tab. */
+export function resolveBrowserMode(config: Config, mode: unknown, attach: unknown): BrowserMode {
+  if (mode !== undefined && attach !== undefined) throw new Error('Use mode or legacy attach, not both');
+  if (mode !== undefined) return parseBrowserMode(mode);
+  if (attach !== undefined) return flag(attach, false) ? 'cdp-isolated' : 'launch-isolated';
+  return config.browserMode;
+}
 export function parseConfig(raw: unknown): Config {
   const c = object(raw, 'configuration');
   const origins = (v: unknown) => strings(v, []).map(s => {
@@ -13,6 +26,9 @@ export function parseConfig(raw: unknown): Config {
   });
   const allowedOrigins = origins(c.allowedOrigins);
   if (!allowedOrigins.length) throw new Error('allowedOrigins must explicitly list your authorized test origins');
+  const browserMode = parseBrowserMode(c.browserMode ?? 'launch-isolated');
+  const allowExistingTab = flag(c.allowExistingTab, false);
+  if (browserMode === 'existing-tab' && !allowExistingTab) throw new Error('existing-tab requires operator allowExistingTab=true');
   return {
     allowedOrigins, resourceOrigins: origins(c.resourceOrigins),
     headless: flag(c.headless, false), captureArtifacts: flag(c.captureArtifacts, false),
@@ -31,6 +47,8 @@ export function parseConfig(raw: unknown): Config {
     executablePath: process.env.QA_BROWSER_EXECUTABLE || undefined,
     cdpEndpoint: process.env.QA_CDP_ENDPOINT || (c.cdpEndpoint === undefined ? undefined : text(c.cdpEndpoint, 'cdpEndpoint', 300)),
     browserProxy: c.browserProxy === undefined ? undefined : text(c.browserProxy, 'browserProxy', 1000),
+    browserMode, allowExistingTab,
+    extensionConnectTimeoutMs: integer(c.extensionConnectTimeoutMs, 120000, 1000, 180000),
   };
 }
 export function loadConfig(root: string): Config {

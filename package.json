@@ -1,34 +1,28 @@
 {
   "name": "jev-page-tester",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "OMP-supervised exploratory browser testing with official Jev decisions",
   "type": "module",
-  "engines": {
-    "node": ">=22.16.0"
-  },
+  "engines": { "node": ">=22.16.0" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && node --check .omp/extensions/qa.js",
-    "test": "npm run build && node --test dist/tests/unit.test.js dist/tests/bridge.test.js",
-    "test:browser": "npm run build && node --test dist/tests/browser.test.js",
+    "test": "npm run build && node --test dist/tests/unit.test.js dist/tests/bridge.test.js dist/tests/existing-tab.test.js",
+    "test:browser": "npm run build && node --test dist/tests/browser.test.js dist/tests/borrowed-browser.test.js",
+    "test:mcp": "npm run build && node --test dist/tests/mcp-integration.test.js",
     "demo": "npm run build && node dist/src/cli.js demo",
     "fixture": "npm run build && node dist/src/cli.js fixture",
     "start": "node dist/src/cli.js",
-    "check": "npm run typecheck && npm test && npm run test:browser"
+    "check": "npm run typecheck && npm test && npm run test:browser && npm run test:mcp"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "0.6.0",
+    "@playwright/mcp": "0.0.82",
+    "@modelcontextprotocol/sdk": "1.25.2",
     "playwright": "1.55.1",
     "undici": "6.21.3"
   },
-  "devDependencies": {
-    "@types/node": "22.15.30",
-    "typescript": "5.8.3"
-  },
-  "omp": {
-    "extensions": [
-      "./.omp/extensions/qa.js"
-    ]
-  }
+  "devDependencies": { "@types/node": "22.15.30", "typescript": "5.8.3" },
+  "omp": { "extensions": ["./.omp/extensions/qa.js"] }
 }
