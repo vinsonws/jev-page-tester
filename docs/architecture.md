@@ -1,79 +1,83 @@
-# Architecture / 初始实现边界
+# Architecture / 实现边界
 
 ## 分层与所有权
 
-Muse Spark 是 OMP 当前主模型，不是本项目直接启动的另一个聊天客户端。主模型经五个高层工具给 Worker 下发局部目标，Jev 不负责整个测试计划。
+Muse Spark 是 OMP 主模型，不是本项目启动的另一个聊天客户端。`.omp/extensions/qa.js` 只注册五个 qa 工具、转发进度/取消、返回证据。WorkerBridge 用无 shell 的 Node 子进程和有边界的 JSON-lines stdio。
 
-`.omp/extensions/qa.js` 只注册工具、转发取消和进度、处理返回的可选图片。`WorkerBridge` 使用无 shell 的 Node 子进程和 JSON-lines stdio；没有 HTTP 端口、远程服务、MCP 或第二个主 Agent。
+Worker 内的 MCP SDK 内存传输只连接 Microsoft 官方 Playwright 扩展；不开放额外外部 MCP 端口，不把原始浏览器工具注册给 Muse，也不加入第二个 Agent 循环。官方扩展自己的本地授权/relay 由固定的上游包管理。
 
-每个浏览器会话同一时间只接受一个操作。可以拥有多个独立会话，但上限由本地配置控制。一次 Mission 最多 100 个宏动作、最长 180 秒，配置默认更低；一个 burst 是一个宏动作，实际点击次数另受上限约束。
+每个会话同一时间一个操作，独立会话有配置上限。existing-tab 每 Worker 最多一个，包含正在授权的连接。每个任务最多 100 个宏动作、180 秒，默认更低；burst 的点击次数另有限制。
 
-## 局部决策
+## 三种浏览器模式
 
-1. 采集主文档可见、可操作且非私密的控件，最多扫描 300 个候选节点、保留 60 个控件。
-2. 用标签、角色、类型、当前有限文本构造快照；同时保留不发送给模型的真实 ElementHandle。
-3. 根据主模型提供的输入案例构造完整动作候选，候选总数不超过 Jev 的 Choice 上限。
-4. 调用官方 SDK，验证 answer 类型、候选 ID、概率范围、分布与用量结构。
-5. 若不确定、无合适目标或连续无进展，交回主模型；概率阈值不承担安全授权职责。
-6. 校验快照与目标身份后执行，不能重用旧编号点击新的 DOM 节点。
-7. 独立采集执行结果和异常，不把 Jev 的 `done` 当作正确性判断。
+| 模式 | 创建或取得的页面 | 生命周期 |
+|---|---|---|
+| launch-isolated | 启动浏览器、新 context、新 page | 关闭拥有的浏览器 |
+| cdp-isolated | 连接外部 Chrome、新隔离 context/page | 关自己的 context，再断开 CDP |
+| existing-tab | 官方扩展授权的已有 Page | 只清理自己的监听/路由和连接 |
 
-可执行 JS 都是仓库里的固定观察/操作代码。模型不能传入 eval、shell、任意 JavaScript 或浏览器连接地址。
+旧 `attach:true` 映射 cdp-isolated，不继承原 profile 登录。新 `mode` 和旧 `attach` 不可同时传。缺省模式取操作者配置；existing-tab 无论从何入口都需本地 `allowExistingTab=true`。
 
-## 模型调用与重试
+`src/existing-tab.ts` 使用公开 `createConnection` + `browser.initPage`。唯一 MCP 调用是只读的 tab list，初始化钩子接收已有 Playwright Page；这不是页面内 eval。钩子是仓库固定代码，只在独立临时目录生成，每连接一个模块，不能从模型传入脚本。
 
-`src/jev.ts` 延迟加载 `@typesafe-ai/sdk`，仅调用官方服务。可选 HTTP 代理单独作用于该 SDK 请求。
+exactly-one 页面检查通过后绑定该 Page，不重新选择活动页。`qa_open.url` 在 existing-tab 只验证 origin，不导航、不 resize、不导入或导出认证。用户可从半填表单开始。授权取消/超时以专用错误退休 Worker，避免上游未完成握手被晚到的批准重新激活。
 
-SDK 可以对网络请求重试一次；对浏览器动作不重试。模型调用失败标为 `model_error`，没有脚本或其他模型降级。脚本决策器只出现在明确的 demo/test 路径。
+## 页面与网络范围
 
-每个会话的模型决策次数上限是动作上限的两倍，每个任务还受时长、动作数和事件数量限制。当前不提供精确美元账单预算；请求实际返回的模型名和 input token 用量记录在事件中。
+操作权限由操作者配置，模型只能缩小预算，不能增加 origin、危险动作或截图权限。
 
-## 页面与网络权限
+隔离模式使用 context 级请求/WS 路由，Service Worker 禁用，额外页面/下载/对话框按既有策略处理。CDP 隔离模式与独立启动共用这些策略；两者都可显式加载测试 storageState。
 
-操作权限由 `qa.config.json` 控制，模型参数只能缩小预算，不能扩展 origin、危险动作权限、截图权限或进程执行能力。
+existing-tab 只监控选中 Page，安装可移除的 page 级请求路由。不会在共享 context 安装全局拦截或 popup 关闭器，也不关闭用户创建的新页。当前页离开 allowedOrigins、关闭或连接撤销后失效，不自动重定向/换页。
 
-页面导航只允许 `allowedOrigins`；资源/API 可使用 `resourceOrigins`。WebSocket 地址按 HTTP(S) origin 对照检查。Service Worker 禁用，以免绕过请求路由观测。下载、额外标签页与原生对话框分别取消/关闭/取消并记录。
+该模式不干预现有 Service Worker、扩展、代理、已有 WebSocket 或其他标签页。已经发生的请求不可补录，拦截不构成完整网络沙盒。page 级路由也会影响该测试页的请求处理与缓存，调查相关问题时应考虑观测影响。
 
-**这不是浏览器安全沙盒或完整 DLP。** 浏览器自身活动、允许的后端以及其他 OMP 工具仍是独立边界；名称过滤也无法理解所有破坏性动作。只在授权测试环境运行。
+只点一个标签页不等于后端隔离：共享登录、存储和业务数据仍可影响其他页面。名称过滤不是授权机制。仅用测试账号和合成数据。
 
-## 附加模式（操作者已有的 Chrome）
+## 局部决策与执行
 
-默认由测试器 `chromium.launch` 自己启动浏览器。配置 `cdpEndpoint` 后可用 `qa_open(attach: true)` 改为 `chromium.connectOverCDP` 附加到操作者启动的 Chrome，让 Jev 操作真实窗口和已登录账号。
+1. 主文档最多扫描 300 个节点、保留 60 个可操作非私密控件。
+2. 提供有限文本/标签/角色/类型，真实 ElementHandle 只在本地保留。
+3. 将 Muse 提供的合成输入构造成完整候选，限制数量。
+4. 官方 SDK 调用 Jev，严格校验返回类型、候选与概率。
+5. 不确定、找不到操作或重复无进展时交回主模型；阈值不是安全授权。
+6. 核对快照与真实目标身份再执行，不重用旧 ID 点击替代节点。
+7. 采集独立异常，done 不等于 PASS。
 
-- Chrome 136 起 `--remote-debugging-port` 在默认 profile 目录下被静默忽略，因此必须用 `--user-data-dir` 指向专用目录启动；附加只指向那个专用 profile。
-- 测试器在附加浏览器上调用 `newContext()` 获得独立 context，**不继承该 profile 的 cookie**；已在自动化测试中断言 Jev 驱动的页面读不到操作者会话 cookie。
-- 只驱动自己创建的那一个 page；操作者已有标签页、窗口和其他 profile 不被驱动也不被关闭。
-- 关闭路径按附加与否分叉：附加时只 `context.close()` 断开自己的 context，**不调用 `browser.close()`**；默认模式才关闭自己启动的浏览器。取消、预算耗尽、异常退出同样只断开，已在测试中锁定附加 Chrome 在这些路径下保持存活。
-- origin 白名单、危险操作名称过滤、`blockedSelectors`、输入/输出限额与默认模式共用同一份 `Config`，附加不会放宽任何权限；模型参数依旧只能缩小预算。
-- 人工登录动作仍不进入重放记录；重放在附加模式下同样不调用模型。
+精确输入由上层提供。执行器支持用户级连续点击，不保证毫秒级实时性，也不默认 force。固定观察/执行代码之外，不接受任意 eval、shell 或浏览器连接地址。
 
-## 异常与断言
+Jev 使用官方 SDK，网络失败可重试一次，但浏览器修改动作不重试。模型故障与页面异常分开，没有静默脚本降级。每会话模型调用次数上限为动作上限两倍，另有时长/事件上限；无精确美元账单预算。事件记录实际模型版本、概率与 input tokens。
 
-`pageerror` 是未捕获的页面 JavaScript 异常，`crash` 是 renderer 崩溃，不应混为一谈。
-HTTP 5xx 是待调查信号，不天然证明前端缺陷；4xx/console/requestfailed 也分别记录，不默认一律终止。默认发现 pageerror/crash/5xx/显式断言失败时返回主模型。
+## 异常和检查
 
-检查包含三种：元素数量等于预期、唯一元素包含预期可见文字、唯一允许控件的值等于预期。
-它们在 Jev 选择 `done` 后运行。预算耗尽或阻塞时未执行的检查不能算通过。检查来源是主模型/操作者提供的预期；框架不会自动推导业务规则。
+pageerror 与 renderer crash 分开。5xx 是待调查信号，不自动证明前端缺陷；4xx、console 与 requestfailed 也分别保留。默认 pageerror/crash/5xx/显式检查失败时交还主模型。
 
-`stopped` 只表示当前探索结束。`budget_exhausted`、`blocked`、`cancelled`、`model_error`、`harness_error` 与 `anomaly` 分别保留，不输出整体 PASS。
+检查支持元素 count、唯一元素 text 包含、允许控件 value 精确匹配，由操作者/主模型提供预期。只有 stopped 后执行的检查才有检查结果；预算耗尽或 blocked 不能算通过。
 
-## 记录与重放
+返回 stopped / budget_exhausted / anomaly / blocked / cancelled / model_error / harness_error，整体 verdict 保持 not_evaluated。
 
-动作开始前写入意图，动作结束后更新状态和已经收集的点击时序。动作失败可能已经产生副作用，记录明确保留 error/started，不做隐式补偿或重试。Worker 被强制终止时，最后一次动作的完成时刻可能无法取得。
+## 留证和重放
 
-`actions.json` 保存本地输入与确定性定位信息；事件另写入追加式 JSONL。截图与 trace 显式启用，关闭浏览器时完成 trace；硬终止可能导致 trace 不完整，但先前落盘的意图和事件仍可用。
+动作前先写意图，结束后补结果和已收集时序；超时可能已有副作用，不隐式补偿。JSONL 追加事件，输入/选择器记录留本地。强杀可能失去动作完成信息。
 
-重放创建新隔离浏览器，从同一起点按记录执行，不调用 Jev，定位不唯一或身份变化时停止。动作开始时刻的间隔尽可能保留，但不提供实时调度/同一网络竞态的保证。重放按同样位置检查已有断言。
+browser.json 保存模式、实际初始 URL、初始 DOM 指纹。重放使用原模式，不调用模型，目标不唯一或身份漂移时停止。旧记录无模式元数据不猜测；时间间隔尽力重放，不保证相同竞态。
 
-框架不重置后端、不保存人工登录动作，也不证明业务前置条件等价。`resetConfirmed` 要由主模型在实际完成重置/获得操作者确认后使用。不要自动声明同类事件就是同一个缺陷。
+existing-tab 重放必须先释放原会话，人工恢复认证、UI 与后端，再重新授权页面。不自动 goto；指纹不等则零动作 blocked。匹配也不证明所有隐藏/后端状态等价。
 
-## 取消与进程生命周期
+截图需要 captureArtifacts。隔离模式可有 trace；existing-tab 禁止 context-wide trace，避免采集其他页面。截图无可靠自动脱敏。上游临时诊断仅本地使用，释放连接后删除。
 
-主模型工具的 AbortSignal 经 stdio 发送取消，Worker 中止模型等待并关闭所拥有的浏览器。
-父进程在取消后仍无法获得响应时强制终止 Worker；硬上限还处理无响应的进程。取消后不复用该浏览器。
+## 取消与释放
 
-`qa_close` 用于正常关闭空闲会话，`/qa-stop` 用于关闭所有会话；OMP 退出/切换会话触发清理。进程崩溃不能把任务伪装成已完成。
+AbortSignal 经 stdio 到 Worker；取消中止模型等待和后续操作。trace 失败不允许跳过所有权清理。
 
-## 下一步，而非已完成能力
+- 独立启动：关闭拥有的浏览器。
+- CDP 隔离：关闭自己的 context，并调用 CDP Browser.close 释放 transport；不是终止外部 Chrome。
+- existing-tab：卸载自己的监听/路由，断开连接；绝不关 borrowed page/context。
 
-优先补充真实 Muse/OMP/Jev 链路测试与版本锁定，再考虑跨 frame 元素地址、应用级权限规则、覆盖状态图、复现路径缩减、网络故障注入和视觉检查。不要在此之前引入额外的自主 Agent 循环。
+existing-tab 在软动作预算、时限或 harness_error 时也释放；正常 done/anomaly 可保留 idle 连接检查现场，之后 qa_close。取消不能撤销已经发到浏览器或服务器的动作，用户应停止后再人工修改，不提供同时控制的冲突解决。
+
+/qa-stop 和 OMP 生命周期事件停止 Worker；父进程有硬截止和强制清理。待授权时取消会退休整个 Worker，同 Worker 独立浏览器也会关闭，但用户已有页保留。下次工具调用新建 Worker。
+
+## 未实现的扩展
+
+跨 frame/Shadow DOM/canvas、上传/多标签页流程、视觉回归、自动后台重置、覆盖图、路径缩减、完整 Service Worker/WS 观测，以及真实 renderer crash 测试，不属于本次功能。用户桌面的完整扩展授权 + Muse/OMP/在线 Jev 必须单独记录验证，不能用注入 contextGetter 的测试冒充。

@@ -6,24 +6,6 @@ on:
 permissions:
   contents: read
 jobs:
-  resolve-lock:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/existing-tab-extension'
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm install --ignore-scripts --no-audit --no-fund
-      - name: Store generated lockfile as an unreferenced blob only
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          node -e 'process.stdout.write(JSON.stringify({content:require("fs").readFileSync("package-lock.json","utf8"),encoding:"utf-8"}))' > "$RUNNER_TEMP/qa-lock-blob.json"
-          gh api --method POST "repos/$GITHUB_REPOSITORY/git/blobs" --input "$RUNNER_TEMP/qa-lock-blob.json" --jq '"QA_LOCK_BLOB=" + .sha'
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -32,7 +14,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install --ignore-scripts --no-audit --no-fund
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - run: npm run typecheck
       - run: npm test

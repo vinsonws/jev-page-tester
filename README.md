@@ -2,52 +2,93 @@
 
 **Muse Spark 负责探索策略，OMP 负责主循环，官方 Jev 负责局部动作选择，Playwright 负责执行和留证。**
 
-这是探索式页面健壮性测试的初始实现：尝试异常输入、重复提交、操作顺序和状态组合，寻找逻辑疑点、未捕获异常与崩溃信号。它不是并发负载测试器，也不会把「模型完成任务」等同于「页面通过测试」。
+这是探索式页面健壮性测试器：尝试异常输入、重复提交、操作顺序和状态组合，寻找逻辑疑点、未捕获异常与崩溃信号。不是并发负载生成器，也不会把「模型完成任务」等同于「页面通过测试」。
+
+## 新增：直接操作你已经打开的页面
+
+`existing-tab` 模式通过 **Microsoft 官方 Playwright 浏览器扩展**，让你明确选择一个现有标签页。测试器保留该页的登录、弹窗和未提交输入，不重新导航、不新建页面、不调整窗口尺寸。你切换活动标签页也不会改变已绑定的操作目标。
+
+停止时释放控制权，不关闭你的页面或 Chrome。这是类似 Codex Chrome 扩展的使用体验，不是 Codex 的内部实现或代码。
+
+**[完整安装与使用说明](docs/existing-tab.md)** · [工具参数](docs/tools.md) · [架构](docs/architecture.md) · [AGENTS.md](AGENTS.md)
 
 ```text
 Muse Spark / OMP
   └─ qa_open / qa_explore / qa_inspect / qa_replay / qa_close
        └─ 独立 Node Worker（本地 stdio RPC）
             ├─ DOM 观察 → 官方 Jev Choice → 有边界的页面动作
-            ├─ 独立异常事件 / 声明式断言
-            └─ 操作记录 / 重放 / 本地报告
+            ├─ 独立异常事件 / 声明式断言 / 操作记录 / 重放
+            └─ 浏览器后端
+                 ├─ launch-isolated：独立测试浏览器
+                 ├─ cdp-isolated：CDP 连接上的独立 context
+                 └─ existing-tab：官方扩展授权的已有页面
 ```
 
-开发与测试代理先阅读 [AGENTS.md](AGENTS.md)。架构详见 [docs/architecture.md](docs/architecture.md)，工具参数见 [docs/tools.md](docs/tools.md)。
+MCP 只在 Worker 内用于官方扩展连接，**不会给 Muse 增加一整套浏览器工具，也没有第二个主模型循环**。
 
-## 当前可以做什么
+## 1. 安装或升级
 
-- 点击、填写、选择下拉项、Escape、滚动，以及显式允许的刷新/返回。
-- 小批量连续点击：由代码执行，不在每次点击之间等待模型；仍保留 Playwright 正常可交互检查，不使用 `force`。
-- 一个局部任务连续运行多步；遇到不确定、重复无进展、异常或预算上限，交回主模型。
-- 捕获 `pageerror`、renderer crash、console error、HTTP 4xx/5xx 和请求失败，分别分类。
-- 主模型提供 count/text/value 断言；Jev 选择 `done` 后由代码检查，不让 Jev 判断自身是否通过。
-- 记录真实操作、输入、定位依据、调用时序；重放不调用模型，也不静默更换目标。
-- 支持取消、每会话互斥、进程隔离、精确 origin 白名单、输入/输出限额与本地脱敏。
-- 截图和 Playwright trace 默认关闭，显式启用后可留证；截图可按需返回主模型。
-- 可附加到你已登录的 Chrome（`attach: true` + `cdpEndpoint`），Jev 直接操作那个真实窗口；你的登录态、其他标签页和 Chrome 进程都不受影响。
+需要 Node.js **22.16+**。OMP 单独安装，继续使用你已有的 Muse Spark 配置。项目不会修改 OMP 的模型提供商，也不保存 Muse 密钥。
 
-**初始验证不是全链路认证。** 已完成本地真实 Jev 调用与原生 OMP `-p` 链路验证；交互式 Muse Spark、代理传输、真实 renderer crash 与任意用户应用仍未验证。已完成的测试及环境限制见 [docs/validation.md](docs/validation.md)。
-
-## 1. 安装
-
-需要 Node.js **22.16+**；OMP 单独安装，继续使用你已配置好的 Muse Spark。这个项目不会修改 OMP 的模型提供商或保存 Muse 的密钥。
+新安装：
 
 ```bash
 git clone https://github.com/vinsonws/jev-page-tester.git
 cd jev-page-tester
-npm install
-npx playwright install chromium
-cp .env.example .env
-cp qa.config.example.json qa.config.json
+npm ci
 npm run build
+cp .env.example .env
 ```
 
-Windows PowerShell 将两条 `cp` 替换为 `Copy-Item` 即可。不要用 `sudo` 启动测试器。
+已有仓库：先保存本地修改，再执行 `git pull --ff-only`、`npm ci`、`npm run build`。**不要覆盖已有 `.env` 或 `qa.config.json`。** 直接与传递依赖均由已提交的 lockfile 固定。
 
-初始源码中的直接依赖已固定版本；`package-lock.json` 已在可联网环境生成并提交，`npm ci` 可复现安装。
+### 用当前浏览器
 
-## 2. 配置官方 Jev 和测试范围
+在平时使用的 Chrome profile 安装 [官方 Playwright Extension](https://github.com/microsoft/playwright/blob/main/packages/extension/README.md)（从官方说明中的商店链接进入）。打开测试站点并登录专用测试账号。
+
+没有配置文件时可用：
+
+```bash
+cp qa.config.existing-tab.example.json qa.config.json
+```
+
+已有配置则合并下面字段，保留并核对原有白名单：
+
+```json
+{
+  "browserMode": "existing-tab",
+  "allowExistingTab": true,
+  "allowedOrigins": ["http://localhost:3000"],
+  "resourceOrigins": [],
+  "extensionConnectTimeoutMs": 120000,
+  "captureArtifacts": false,
+  "allowRiskyActions": false
+}
+```
+
+把示例 origin 改成真正的测试站点。API/CDN 可填入 `resourceOrigins`，但它们不会因此成为允许的页面导航目标。`localhost` 与 `127.0.0.1`、不同端口都是不同 origin。
+
+本模式**不需要**远程调试启动参数、9222 端口、专用 Chrome profile、cookie 导出或另起 MCP 服务。不要把 Playwright MCP 工具额外注册给 OMP。`PLAYWRIGHT_MCP_EXTENSION_TOKEN` 自动批准被禁用，连接必须通过用户授权。
+
+### 保留独立浏览器
+
+`qa.config.example.json` 默认是 `launch-isolated`，需要额外安装：
+
+```bash
+npx playwright install chromium
+```
+
+三个模式的区别：
+
+| mode | 页面/登录态 | 结束时 |
+|---|---|---|
+| launch-isolated | 新浏览器、新 context，可显式加载测试 storageState | 关闭测试器启动的浏览器 |
+| cdp-isolated | 连接指定 CDP Chrome，但创建独立 context；不继承原 profile 登录 | 关闭自己创建的 context，断开连接 |
+| existing-tab | 用户通过官方扩展授权的已有页面，沿用当前登录和 DOM | 只释放控制权，保留页面 |
+
+旧的 `attach:true` 仍只表示 `cdp-isolated`，**不是登录态复用**；不要与 `mode` 同时传入。CDP 地址来自操作者的 `cdpEndpoint` 或 `QA_CDP_ENDPOINT`，不能由模型任意指定。
+
+## 2. 官方 Jev 与网络
 
 在本地 `.env` 填写：
 
@@ -56,193 +97,107 @@ TYPESAFE_API_KEY=你的官方TypeSafe密钥
 JEV_MODEL=jev-1.13.0
 ```
 
-官方 API 固定为 TypeSafe；不会在失败时切换到其他模型或演示脚本。`qa.config.json` 中的 `model` 优先于 `JEV_MODEL`。
+`qa.config.json.model` 优先于环境变量。Jev 请求失败不会悄悄切换成演示脚本或其他模型。
 
-按你的应用修改 `qa.config.json`，尤其是 **origin，包括协议和端口**：
+官方 Jev 可单独设置 HTTP 代理，不需要 TUN：
 
-```json
-{
-  "allowedOrigins": ["http://localhost:3000"],
-  "resourceOrigins": ["http://localhost:8080"],
-  "headless": false,
-  "captureArtifacts": false,
-  "allowRiskyActions": false,
-  "blockedSelectors": ["[data-qa-private]"],
-  "maxActionsPerMission": 30,
-  "maxMissionMs": 120000,
-  "maxSessionActions": 200,
-  "maxBurstClicks": 3,
-  "minProbability": 0.65,
-  "model": "jev-1.13.0"
-}
-```
-
-`allowedOrigins` 允许页面导航；`resourceOrigins` 只允许资源/API 请求，不能成为导航目标。没有通配符，模型也不能通过工具参数扩展白名单。不同端口、`localhost` 与 `127.0.0.1` 是不同 origin。
-
-`minProbability=0.65` 是未校准的工程初始值，不是官方推荐，更不是安全保证。默认拒绝名称含删除、付款、发送等字样的操作；这只是启发式过滤，不能替代账号权限。要测删除流程，只在隔离测试数据环境中手动启用 `allowRiskyActions`。
-
-### 代理与可见 Chrome
-
-官方 Jev 的 HTTP 代理可单独配置，不需要本项目启用 TUN：
 ```dotenv
 QA_JEV_PROXY=http://127.0.0.1:1080
 ```
 
-这通过 SDK 的自定义传输和 Undici `ProxyAgent` 实现；不会改变 Muse/OMP 的连接或浏览器代理。需要浏览器代理时，在本地配置中单独设置 `browserProxy`。代理路径尚未在线验证。
+它只作用于官方 SDK 的传输，不改变 Muse/OMP 或浏览器网络。代理路径仍需在你的环境验证。
 
-使用系统 Chrome 而不是下载的 Chromium，可设置绝对路径：
+`launch-isolated` 可设置 `QA_BROWSER_EXECUTABLE` 指向系统 Chrome，并可设置 `browserProxy`。`QA_STORAGE_STATE` 可向独立 context 加载专用测试账号的 Playwright 状态文件。`existing-tab` 不应用这些启动/状态选项，沿用你已有浏览器的网络与登录，不导出凭据。
 
-```dotenv
-# macOS
-QA_BROWSER_EXECUTABLE=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-# Windows 示例（取消下一行注释时，注释上面的 macOS 行）
-# QA_BROWSER_EXECUTABLE=C:\Program Files\Google\Chrome\Application\chrome.exe
-```
-
-浏览器始终是测试器拥有的独立会话，不连接日常 Chrome profile。可在有界面窗口中人工登录专用测试账号；需要新会话加载已保存的登录态时，设置 `QA_STORAGE_STATE` 为 Playwright storageState 文件绝对路径。首版不提供登录态导出工具，人工登录动作不在重放记录中。
-
-### 附加到你正在用的 Chrome（attach 模式）
-
-默认模式由测试器自己启动一个独立浏览器。attach 模式改为**附加到你已经开着的 Chrome**，Jev 操作的就是那个真实浏览器窗口：你自己登录好的账号、扩展、已打开的页面都在，你可以实时看到每次点击。
-
-前提：Chrome 136 起 `--remote-debugging-port` 在**默认 profile 目录下会被静默忽略**，所以必须用 `--user-data-dir` 指向一个专用目录来启动：
-
-```bash
-# macOS：完全退出 Chrome 后执行
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --user-data-dir="$HOME/qa-chrome-profile" \
-  --remote-debugging-port=9222
-```
-
-然后用该窗口**手动登录**你的测试账号（这个登录动作不进重放记录），在 `qa.config.json` 里配置：
-
-```json
-{ "cdpEndpoint": "http://127.0.0.1:9222" }
-```
-
-或用环境变量 `QA_CDP_ENDPOINT=http://127.0.0.1:9222`。之后给 Muse 的指令里 `qa_open` 加 `attach: true`：
-
-```json
-{ "url": "https://你的测试环境", "attach": true }
-```
-
-attach 模式的安全边界（已在自动化测试中锁定）：
-
-- 测试器**只会附加到你启动时那个 profile**，且只用 `browser.newContext()` 创建的独立 context；不会碰你已有的标签页。
-- 该 context **不继承你的登录 cookie**，Jev 看到的页面拿不到你的会话凭据。
-- 你的其他标签页、窗口和 profile 完全不被驱动，也不会被关闭。
-- `qa_close`、取消、预算耗尽、进程退出都只关闭测试器自己的 context，**你的 Chrome 进程始终不会被这个工具杀掉**；取消或异常同样只断开连接。
-- origin 白名单、危险操作过滤、输入限额与默认模式完全一致，不因附加而放宽。
-
-不要在附加窗口里操作你自己的真实账号数据；这仍是测试器，不是安全沙盒。
+`minProbability=0.65` 只是未校准的工程初始值，不是官方推荐或安全保证。删除、付款、发送等名称默认过滤；这不是完整的业务权限系统。只有隔离的测试数据环境才应手动启用 `allowRiskyActions`。
 
 ## 3. 在 OMP 中使用
 
-从本仓库根目录启动 OMP：
+构建后从仓库根目录运行：
 
 ```bash
 omp
 ```
 
-OMP 会发现 `.omp/extensions/qa.js`。在 `/model` 中选择你已经配置好的 Muse Spark。也可从其他工作目录显式加载：
+也可以在其他目录显式加载：
 
 ```bash
 omp -e /absolute/path/to/jev-page-tester/.omp/extensions/qa.js
 ```
 
-先 `npm run build` 再加载扩展。配置和产物目录始终以本仓库为根，不是被测应用的代码目录。
+在 `/model` 选择你已配置的 Muse Spark。项目配置和产物始终以本仓库为根。给 Muse 的示例要求：
 
-非交互冒烟验证（已验证可行）：
+> 阅读 AGENTS.md。使用 existing-tab 模式连接我授权的页面，预期站点是 http://localhost:3000。不要重新打开或刷新。先 qa_open 和 qa_inspect，确认当前状态，再分批探索空值、空格、取消后的残留与重复提交。只用测试数据，不要改应用代码。发现异常先留证，不要把 Jev 的 done 当作页面通过。
 
-```bash
-omp -e /absolute/path/to/jev-page-tester/.omp/extensions/qa.js -p "调用 qa_open ..."
+实际工具参数：
+
+```json
+{ "url": "http://localhost:3000", "mode": "existing-tab" }
 ```
 
-`-p` 模式只会暴露 `qa_*` 工具，不提供 `/qa-stop` 斜杠命令；该命令需在交互式 TUI 中验证。
-
-给 Muse 的起始指令可以直接使用 [prompts/explore.md](prompts/explore.md)，例如：
-
-> 使用 qa 工具测试 http://localhost:3000 的日程创建与编辑。先观察页面，再每次下发一个局部探索目标。关注空值、空格、长度边界、取消后状态残留和重复提交。只使用测试数据；不要修改应用代码；发现异常先保存并查看证据，再验证复现。不要把 Jev 的 done 当作页面通过。
-
-工具出现后，完整流程是：
+`url` 在此模式只检查预期 origin，不执行导航。官方扩展出现授权/选择界面时，只共享**一个**目标标签页。连接后 `qa_explore` 才开始操作，`qa_inspect` 可以继续检查现场。
 
 ```text
-qa_open → qa_inspect → qa_explore → 检查证据 → 新目标或 qa_replay → qa_close
+qa_open → qa_inspect → qa_explore → 查看证据 → 下一局部目标 → qa_close
 ```
 
-`qa_explore.inputs` 是具体测试字符串，`field` 用标签匹配（`*` 表示所有可编辑控件）。Jev 只选择现有操作候选，不负责生成字符串。每批最多 8 个输入，复杂组合应由 Muse 分批下发。
+输入由 Muse 提供具体合成字符串，Jev 只选择现有候选；每批最多 8 个输入案例。`inputs` 是候选输入，不是必然逐条执行的脚本。
 
-取消当前工具调用会中止模型请求并关闭该会话浏览器；`/qa-stop` 停止整个测试 Worker。关闭或切换 OMP 会话也会清理 Worker。取消后重新 `qa_open`，不要假定旧浏览器还能继续。
+空闲时 `qa_close` 释放会话，进行中使用 OMP 取消操作或 `/qa-stop`。existing-tab 保留页面；独立模式关闭自己拥有的浏览器/context。授权阶段取消会重启 Worker，详见 [现有标签页说明](docs/existing-tab.md)。人工接管之前先停止，不要同时操作同一页面；释放控制不会撤销已经提交的数据。
 
-## 4. 先跑不需要密钥的自检
+## 4. 已有能力与自检
+
+支持点击、填写、下拉选择、Escape、滚动、显式允许的刷新/返回、小批量连续点击。保留正常可交互检查，不默认 `force`，也不自动重试超时后的浏览器修改动作。
+
+独立收集 pageerror、renderer crash 信号、console error、HTTP 4xx/5xx 和请求失败；主模型可提供 count/text/value 检查。所有检查都有明确来源，Jev 不负责判定自己是否通过。
 
 ```bash
-npm run typecheck
-npm test
-npm run test:browser
+npx playwright install chromium
+npm run check
 npm run demo -- --headless
 ```
 
-`demo` 使用**明确标记的脚本决策器，不是真 Jev，也不是 Muse**。它在本地故意有缺陷的页面填写标题、连续提交，再由独立断言检测重复记录。预期输出 `status: anomaly`，这证明测试夹具中的已知问题被捕获，而非应用健康。
+`check` 包含类型、单元/IPC、浏览器回归和官方 MCP API 集成测试。**MCP 集成测试用公开 contextGetter 代替手动扩展授权界面，不代表用户桌面的完整链路已验证。**
 
-要手动在 OMP 中探索这个页面，另开终端：
+`demo` 使用标记为 `scripted-test-double` 的决策器，故障夹具故意存在重复提交；预期输出 `status: anomaly`。在另一终端运行 `npm run fixture` 可在 `http://127.0.0.1:4173` 打开夹具，手动填写一半后试验 existing-tab；不要把夹具部署到公网。
 
-```bash
-npm run fixture
-```
-
-页面监听 `http://127.0.0.1:4173`，与默认示例配置一致。不要把这个故障夹具部署到公网。
-
-配置有效密钥后，显式运行官方 Jev 演示（会产生实际 API 调用）：
+显式使用有效密钥、产生真实 API 调用的演示：
 
 ```bash
 npm run demo -- --headless --live
 ```
 
-该命令只测试 Jev 和执行器，不会启动 OMP/Muse；全链路仍应在 OMP 中运行。
+它只验证 Jev/执行器，不启动 Muse。初始版本的历史验证保留在 [docs/validation.md](docs/validation.md)，本次 existing-tab 验证见 [docs/validation-existing-tab.md](docs/validation-existing-tab.md)。
 
-## 5. 查看报告与重放
+## 5. 记录与重放
 
-每个会话生成 `runs/<UUID>/`：
+每会话保存到已 gitignore 的 `runs/<UUID>/`：
 
 ```text
-run.json           初始 URL、时间和请求模型
-snapshot.json      最近一次脱敏后的 DOM 摘要
-mission-*.json     局部目标、输入和预算
-actions.json       操作意图、执行结果、输入和时序
-checkpoints.json   已执行的声明式断言位置
-events.jsonl      追加的异常/策略/模型调用记录
-report.json/md     最近一次执行结论（inspect 不覆盖结论）
-latest.png         显式启用后生成
-trace.zip          显式启用后，关闭会话时完成
+run.json           起始 URL、请求模型、时间
+browser.json       浏览器模式、实际初始 URL、DOM 指纹
+snapshot.json      最近一次脱敏 DOM 摘要
+mission-*.json     局部目标、测试输入和预算
+actions.json       实际操作、输入、结果和时序
+checkpoints.json   已执行的声明式检查位置
+events.jsonl       追加式事件与模型用量
+report.json/md     最近执行结论
+latest.png         captureArtifacts=true 时的页面截图
+trace.zip          仅隔离模式显式开启后，关闭时完成
 ```
 
-所有运行产物、`.env` 和私有配置均已 gitignore。
+重放前实际恢复后端数据及 UI 前置状态，再确认 `resetConfirmed:true`。重放不调用模型，按原模式重新连接；existing-tab 需先释放源会话并重新授权，初始 DOM 指纹不一致会阻止执行，而不是新开浏览器绕过问题。
 
-重放前需要先恢复业务数据和前置条件，再给 `qa_replay` 设置 `resetConfirmed: true`。系统创建新浏览器，按记录重放并重新检查已保存的断言；不会自动重置后端数据，不会自动修复选择器。相同异常再次出现仍须核对证据，不能仅凭类别相同宣布复现成功。
+指纹不证明认证/服务端/全部隐藏状态等价；动态页面可能被保守拒绝。旧记录缺少 `browser.json` 时拒绝猜测，请重新记录。重放尽力保持动作时间，不保证复现同一竞态；同类事件再次出现也不天然证明同一缺陷。
 
-可查看 trace：
+## 隐私与限制
 
-```bash
-npx playwright show-trace runs/<UUID>/trace.zip
-```
+existing-tab 会以当前账号权限执行；只控制一个页面也可能通过共享存储、注销或后端修改影响其他页面。只用授权测试账号和合成数据。
 
-## 隐私和边界
+页面摘要会发送到官方 Jev，工具结果及按需截图会进入 Muse 提供商。文本脱敏是尽力而为；截图/trace 无可靠自动脱敏。默认不记录 cookie、鉴权头或请求/响应正文。
 
-页面数据会发往官方 Jev，工具摘要以及按需截图会进入 Muse 的提供商。请自行确认所选 Muse 渠道的数据使用政策，只使用授权环境和合成测试数据。
+隔离模式禁用 Service Worker，并有 context 级请求/额外页面处理。existing-tab 只增加选中页面的新请求过滤，不改变共享 context；不能完整观测/拦截已发生的请求、Service Worker 或已有 WebSocket。不要将其称为安全沙盒。existing-tab 不生成 context-wide trace。
 
-截图/trace 不做可靠脱敏；trace 可能保存 DOM、网络详情等敏感信息。`captureArtifacts` 默认关闭。普通文本仅做尽力脱敏，不采集 cookie、鉴权 header 或响应 body；`[data-qa-private]` 及密码类控件不进入普通页面快照/候选集。可用 `QA_REDACT_ENV` 增补需要替换的已知秘密。
+当前为主文档 DOM 操作，不含 iframe/Shadow DOM/canvas/复杂拖拽/上传/多标签页流程/视觉回归，不自动重置业务数据或缩减复现路径。renderer crash 监听存在，不代表实际崩溃已被每轮测试验证。
 
-首版只处理主文档中的普通 DOM 控件：**不支持 iframe、Shadow DOM、canvas、文件上传、多标签页或视觉回归**。原生对话框自动取消并记录；额外标签页关闭；Service Worker 禁用。不能据此测试 PWA 离线能力。也未实现系统化覆盖图、自动缩减复现步骤、内存泄漏检测、故障注入或并发负载发生器。
-
-OMP 扩展和本地 Worker 不是安全沙盒。其他 OMP 工具仍可能拥有文件/终端权限；AGENTS.md 的操作约束不等于权限隔离。真实防护依靠测试账号、应用权限与隔离环境。
-
-## 上游接口依据
-
-- [OMP 扩展接口](https://github.com/can1357/oh-my-pi/blob/main/docs/extensions.md)
-- [OMP 扩展加载规则](https://github.com/can1357/oh-my-pi/blob/main/docs/extension-loading.md)
-- [TypeSafe 官方 JavaScript SDK](https://docs.typesafe.ai/sdk/javascript)
-- [TypeSafe SDK 源码](https://github.com/typesafe-ai/typesafe-sdk-js)
-- [Playwright 页面 API](https://playwright.dev/docs/api/class-page)
-
-本仓库未擅自选择开源许可证，`private: true` 也用于避免意外 npm 发布。
+只报告证据支持的异常与局部检查，不输出整个应用的 PASS。
